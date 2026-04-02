@@ -1563,6 +1563,359 @@ fi
 
 ---
 
+## 十、完整脚本实现示例
+
+### 10.1 SessionStart Hook - load-context.sh
+
+**作用：** 在会话开始时自动检测项目类型并设置环境变量。
+
+**完整代码：**
+```bash
+#!/bin/bash
+# SessionStart Hook 示例：加载项目上下文
+# 位置：plugins/plugin-dev/skills/hook-development/examples/load-context.sh
+
+set -euo pipefail
+
+# 导航到项目目录
+cd "$CLAUDE_PROJECT_DIR" || exit 1
+
+echo "正在加载项目上下文..."
+
+# 检测项目类型并设置环境变量
+if [ -f "package.json" ]; then
+  echo "📦 检测到 Node.js 项目"
+  echo "export PROJECT_TYPE=nodejs" >> "$CLAUDE_ENV_FILE"
+  
+  # 检查是否使用 TypeScript
+  if [ -f "tsconfig.json" ]; then
+    echo "export USES_TYPESCRIPT=true" >> "$CLAUDE_ENV_FILE"
+    echo "   └─ TypeScript 支持已启用"
+  fi
+  
+  # 检查是否有锁文件
+  if [ -f "package-lock.json" ]; then
+    echo "export NPM_LOCKFILE=package-lock.json" >> "$CLAUDE_ENV_FILE"
+  elif [ -f "yarn.lock" ]; then
+    echo "export YARN_LOCKFILE=yarn.lock" >> "$CLAUDE_ENV_FILE"
+  elif [ -f "pnpm-lock.yaml" ]; then
+    echo "export PNPM_LOCKFILE=pnpm-lock.yaml" >> "$CLAUDE_ENV_FILE"
+  fi
+
+elif [ -f "Cargo.toml" ]; then
+  echo "🦀 检测到 Rust 项目"
+  echo "export PROJECT_TYPE=rust" >> "$CLAUDE_ENV_FILE"
+
+elif [ -f "go.mod" ]; then
+  echo "🐹 检测到 Go 项目"
+  echo "export PROJECT_TYPE=go" >> "$CLAUDE_ENV_FILE"
+
+elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+  echo "🐍 检测到 Python 项目"
+  echo "export PROJECT_TYPE=python" >> "$CLAUDE_ENV_FILE"
+  
+  # 检查虚拟环境
+  if [ -d ".venv" ] || [ -d "venv" ]; then
+    echo "export VIRTUAL_ENV=true" >> "$CLAUDE_ENV_FILE"
+  fi
+
+elif [ -f "pom.xml" ]; then
+  echo "☕ 检测到 Java (Maven) 项目"
+  echo "export PROJECT_TYPE=java" >> "$CLAUDE_ENV_FILE"
+  echo "export BUILD_SYSTEM=maven" >> "$CLAUDE_ENV_FILE"
+
+elif [ -f "build.gradle" ] || [ -f "build.gradle.kts" ]; then
+  echo "☕ 检测到 Java/Kotlin (Gradle) 项目"
+  echo "export PROJECT_TYPE=java" >> "$CLAUDE_ENV_FILE"
+  echo "export BUILD_SYSTEM=gradle" >> "$CLAUDE_ENV_FILE"
+
+else
+  echo "❓ 未识别的项目类型"
+  echo "export PROJECT_TYPE=unknown" >> "$CLAUDE_ENV_FILE"
+fi
+
+# 检查 CI/CD 配置
+if [ -d ".github/workflows" ] || [ -f ".gitlab-ci.yml" ] || [ -f ".circleci/config.yml" ]; then
+  echo "export HAS_CI=true" >> "$CLAUDE_ENV_FILE"
+  echo "✅ CI/CD 配置已检测"
+fi
+
+# 检查 Docker 配置
+if [ -f "Dockerfile" ] || [ -f "docker-compose.yml" ]; then
+  echo "export HAS_DOCKER=true" >> "$CLAUDE_ENV_FILE"
+  echo "🐳 Docker 配置已检测"
+fi
+
+echo "项目上下文加载完成！"
+exit 0
+```
+
+**使用方法：**
+```json
+{
+  "SessionStart": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/load-context.sh",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
+```
+
+**运行效果示例：**
+```
+[SessionStart] 正在加载项目上下文...
+📦 检测到 Node.js 项目
+   └─ TypeScript 支持已启用
+✅ CI/CD 配置已检测
+🐳 Docker 配置已检测
+项目上下文加载完成！
+```
+
+---
+
+### 10.2 PostToolUse Hook - posttooluse.py
+
+**作用：** 在工具执行后分析结果并提供反馈。
+
+**简化版完整代码（基于 hookify/hooks/posttooluse.py）：**
+```python
+#!/usr/bin/env python3
+"""PostToolUse Hook 示例：工具使用后分析"""
+
+import json
+import sys
+
+def main():
+    """主函数"""
+    try:
+        # 从标准输入读取数据
+        input_data = json.load(sys.stdin)
+        
+        # 提取工具信息
+        tool_name = input_data.get('tool_name', '')
+        tool_result = input_data.get('tool_result', '')
+        
+        # 根据工具类型进行分析
+        if tool_name == 'Bash':
+            analyze_bash_result(tool_result)
+        elif tool_name in ['Edit', 'Write', 'MultiEdit']:
+            analyze_file_modification(input_data)
+        
+        # 默认允许继续
+        print(json.dumps({"continue": True}))
+        sys.exit(0)
+        
+    except Exception as e:
+        # 出错时仍然允许继续，但记录错误
+        error_msg = {"systemMessage": f"PostToolUse Hook 错误：{str(e)}"}
+        print(json.dumps(error_msg))
+        sys.exit(0)
+
+def analyze_bash_result(result):
+    """分析 Bash 命令执行结果"""
+    # 检查命令是否成功
+    if 'error' in result.lower() or 'failed' in result.lower():
+        msg = {"systemMessage": "⚠️ 检测到命令执行失败，请检查结果。"}
+        print(json.dumps(msg))
+    
+    # 检查测试运行
+    if 'test' in result.lower():
+        if 'passed' in result.lower() or '✓' in result:
+            msg = {"systemMessage": "✅ 测试通过！"}
+            print(json.dumps(msg))
+        elif 'failed' in result.lower() or '✗' in result:
+            msg = {"systemMessage": "❌ 测试失败！请修复失败的测试。"}
+            print(json.dumps(msg))
+
+def analyze_file_modification(data):
+    """分析文件修改"""
+    tool_input = data.get('tool_input', {})
+    file_path = tool_input.get('file_path', '')
+    
+    # 检查是否修改了配置文件
+    config_keywords = ['config', 'setting', '.env', 'yaml', 'json']
+    if any(keyword in file_path.lower() for keyword in config_keywords):
+        msg = {"systemMessage": f"📝 检测到配置文件修改：{file_path}\n请确保提交了变更说明。"}
+        print(json.dumps(msg))
+
+if __name__ == "__main__":
+    main()
+```
+
+**使用方法：**
+```json
+{
+  "PostToolUse": [
+    {
+      "matcher": "Bash|Edit|Write",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/posttooluse.py",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
+```
+
+**运行效果示例：**
+```
+[Bash 命令执行后]
+✅ 测试通过！
+
+[文件编辑后]
+📝 检测到配置文件修改：src/config/settings.json
+请确保提交了变更说明。
+```
+
+---
+
+### 10.3 Stop Hook - completion-verifier.sh
+
+**作用：** 在任务完成前验证所有必需步骤已完成。
+
+**完整代码：**
+```bash
+#!/bin/bash
+# Stop Hook 示例：任务完成度验证器
+
+set -euo pipefail
+
+# 读取输入
+input=$(cat)
+reason=$(echo "$input" | jq -r '.reason // ""')
+
+echo "🔍 正在验证任务完成度..."
+
+# 检查清单
+declare -a issues=()
+
+# 检查 1：是否运行了测试
+check_tests_run() {
+  # 检查 transcript 中是否有测试命令
+  transcript_path=$(echo "$input" | jq -r '.transcript_path // ""')
+  
+  if [ -f "$transcript_path" ]; then
+    if ! grep -q "npm test\|yarn test\|pytest\|cargo test" "$transcript_path"; then
+      issues+=("❌ 未运行测试 - 请运行适当的测试命令")
+    else
+      echo "✅ 测试已运行"
+    fi
+  fi
+}
+
+# 检查 2：是否构建了项目（针对编译型语言）
+check_build_run() {
+  cd "$CLAUDE_PROJECT_DIR" || return 0
+  
+  # 检查是否有编译产物
+  if [ -f "package.json" ] && [ -f "tsconfig.json" ]; then
+    if [ ! -d "dist" ] && [ ! -d "build" ]; then
+      issues+=("⚠️ TypeScript 项目但未生成构建产物 - 考虑运行 npm run build")
+    else
+      echo "✅ 构建已完成"
+    fi
+  fi
+  
+  if [ -f "Cargo.toml" ]; then
+    if [ ! -d "target" ]; then
+      issues+=("⚠️ Rust 项目但未编译 - 考虑运行 cargo build")
+    else
+      echo "✅ Rust 项目已编译"
+    fi
+  fi
+}
+
+# 检查 3：是否有未回答的问题
+check_questions_answered() {
+  # 简单检查：用户是否在对话中提出了问题
+  if [ -f "$transcript_path" ]; then
+    # 查找问号但没有后续回答的情况（简化检查）
+    question_count=$(grep -c "?" "$transcript_path" || echo "0")
+    if [ "$question_count" -gt 5 ]; then
+      issues+=("⚠️ 检测到多个问题 - 请确保所有问题都已回答")
+    fi
+  fi
+}
+
+# 执行所有检查
+check_tests_run
+check_build_run
+check_questions_answered
+
+# 输出结果
+if [ ${#issues[@]} -eq 0 ]; then
+  echo "✅ 所有检查通过！任务可以完成。"
+  echo '{"decision": "approve", "systemMessage": "任务完成度验证通过"}'
+  exit 0
+else
+  echo ""
+  echo "❌ 发现以下问题："
+  for issue in "${issues[@]}"; do
+    echo "  $issue"
+  done
+  echo ""
+  echo "请在完成任务前解决上述问题。"
+  
+  # 构造 JSON 响应
+  issues_json=$(printf '%s\n' "${issues[@]}" | jq -R . | jq -s .)
+  cat <<EOF
+{
+  "decision": "block",
+  "reason": "任务完成度验证失败",
+  "systemMessage": "发现 ${#issues[@]} 个问题需要解决",
+  "issues": $issues_json
+}
+EOF
+  exit 2
+fi
+```
+
+**使用方法：**
+```json
+{
+  "Stop": [
+    {
+      "matcher": "*",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/completion-verifier.sh",
+          "timeout": 30
+        }
+      ]
+    }
+  ]
+}
+```
+
+**运行效果示例：**
+```
+🔍 正在验证任务完成度...
+✅ 测试已运行
+✅ 构建已完成
+✅ 所有检查通过！任务可以完成。
+
+或者（当有问题时）：
+🔍 正在验证任务完成度...
+❌ 发现以下问题：
+  ❌ 未运行测试 - 请运行适当的测试命令
+  ⚠️ TypeScript 项目但未生成构建产物
+
+请在完成任务前解决上述问题。
+```
+
+---
+
 ## 十一、总结
 
 ### 核心要点回顾

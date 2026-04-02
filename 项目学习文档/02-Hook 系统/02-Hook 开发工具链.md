@@ -707,7 +707,374 @@ Hook 2: 读取 Hook 1 的状态 → 可能失败（并行执行）
 
 ---
 
-## 九、最佳实践总结
+## 九、Hook 调试实战流程 🐛
+
+### 9.1 启用调试模式
+
+**步骤 1：启动调试模式**
+```bash
+# 方法 1：使用 --debug 参数
+claude --debug
+
+# 方法 2：设置环境变量
+export CLAUDE_DEBUG=1
+claude
+```
+
+**调试模式输出示例：**
+```
+[DEBUG] Session started: abc123
+[DEBUG] Loading hooks from: /path/to/plugin/hooks/hooks.json
+[DEBUG] Registered hooks:
+  - PreToolUse (matcher: Edit|Write)
+  - Stop (matcher: *)
+
+[DEBUG] User prompt: 帮我删除 build 目录
+[DEBUG] Triggering PreToolUse hook...
+[DEBUG] Hook input: {"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}
+[DEBUG] Hook output: {"systemMessage":"检测到删除操作"}
+[DEBUG] Hook exit code: 0
+```
+
+---
+
+### 9.2 查看 Hook 触发日志
+
+**关键日志位置：**
+
+1. **Hook 注册日志**
+   ```
+   [DEBUG] Registering hook: PreToolUse[0]
+   [DEBUG] Matcher: Edit|Write
+   [DEBUG] Type: command
+   [DEBUG] Command: bash ${CLAUDE_PLUGIN_ROOT}/scripts/check.sh
+   ```
+   
+   **作用：** 确认 Hook 是否正确加载
+
+2. **Hook 触发日志**
+   ```
+   [DEBUG] Hook event triggered: PreToolUse
+   [DEBUG] Tool name: Bash
+   [DEBUG] Checking matchers...
+   [DEBUG] Matcher result: true (will execute hook)
+   ```
+   
+   **作用：** 确认 Hook 是否被正确触发
+
+3. **Hook 执行日志**
+   ```
+   [DEBUG] Executing hook script...
+   [DEBUG] Hook PID: 12345
+   [DEBUG] Execution time: 0.234s
+   [DEBUG] Exit code: 0
+   ```
+   
+   **作用：** 查看 Hook 执行情况
+
+4. **Hook 输出日志**
+   ```
+   [DEBUG] Hook stdout: {"continue": true}
+   [DEBUG] Hook stderr: (empty)
+   [DEBUG] Processing hook decision...
+   ```
+   
+   **作用：** 分析 Hook 的决策结果
+
+---
+
+### 9.3 分析输入/输出 JSON
+
+**步骤 1：捕获 Hook 输入**
+
+在 Hook 脚本开头添加调试代码：
+```bash
+#!/bin/bash
+# 在脚本最开始保存输入
+input=$(cat)
+echo "$input" > /tmp/hook-input-$(date +%s).json
+
+# 继续正常处理
+# ...
+```
+
+**步骤 2：分析输入结构**
+```bash
+# 查看最近的输入
+ls -lt /tmp/hook-input-*.json | head -1
+
+# 使用 jq 格式化查看
+cat /tmp/hook-input-123456.json | jq .
+```
+
+**典型的 PreToolUse 输入：**
+```json
+{
+  "session_id": "abc123",
+  "transcript_path": "/tmp/transcript.txt",
+  "cwd": "/home/user/my-project",
+  "permission_mode": "ask",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "rm -rf build"
+  }
+}
+```
+
+**步骤 3：验证输出格式**
+```bash
+# 测试 Hook 输出
+./test-hook.sh my-hook.sh test-input.json 2>&1 | tee hook-output.txt
+
+# 检查输出是否为有效 JSON
+cat hook-output.txt | jq . || echo "❌ 输出不是有效 JSON！"
+
+# 检查必需字段
+cat hook-output.txt | jq 'has("continue") or has("hookSpecificOutput")'
+```
+
+**有效的输出格式：**
+```json
+// 格式 1：简单允许
+{"continue": true}
+
+// 格式 2：带消息
+{
+  "continue": true,
+  "systemMessage": "检查通过"
+}
+
+// 格式 3：阻止执行
+{
+  "hookSpecificOutput": {
+    "permissionDecision": "deny"
+  },
+  "systemMessage": "检测到安全风险"
+}
+```
+
+---
+
+### 9.4 常见问题排查清单
+
+#### 问题 1：Hook 不触发
+
+**症状：** Claude 执行操作时没有看到 Hook 的输出
+
+**排查步骤：**
+```bash
+# 1. 检查 hooks.json 语法
+jq . hooks/hooks.json
+
+# 2. 检查 matcher 是否正确
+# matcher 应该匹配工具名称（大小写敏感）
+# ✅ 正确："Edit|Write", "Bash"
+# ❌ 错误："edit|write", "bash"
+
+# 3. 检查脚本路径
+ls -la ${CLAUDE_PLUGIN_ROOT}/scripts/check.sh
+
+# 4. 检查脚本权限
+chmod +x scripts/check.sh
+
+# 5. 重启 Claude Code
+exit
+claude --debug
+```
+
+**常见原因：**
+- ❌ matcher 拼写错误
+- ❌ 脚本路径不正确
+- ❌ 脚本没有执行权限
+- ❌ 没有重启 Claude Code
+
+---
+
+#### 问题 2：Hook 超时
+
+**症状：** 等待很长时间后显示 "Hook execution timed out"
+
+**排查步骤：**
+```bash
+# 1. 测量实际执行时间
+time ./my-hook.sh < test-input.json
+
+# 2. 如果超过 25 秒，需要优化
+# 标准 timeout 是 30 秒，建议留出 5 秒余量
+
+# 3. 如果是 Prompt Hook，考虑：
+# - 简化 prompt 内容
+# - 减少上下文长度
+# - 降低 AI 模型复杂度
+
+# 4. 如果是 Command Hook，考虑：
+# - 移除耗时的外部调用
+# - 添加缓存机制
+# - 使用并行处理
+```
+
+**优化示例（添加缓存）：**
+```bash
+#!/bin/bash
+# 带缓存的检查
+input=$(cat)
+cache_key=$(echo -n "$input" | md5sum | cut -d' ' -f1)
+cache_file="/tmp/hook-cache-$cache_key"
+
+if [ -f "$cache_file" ] && [ $(($(date +%s) - $(stat -c%Y "$cache_file"))) -lt 300 ]; then
+  cat "$cache_file"
+  exit $(cat "${cache_file}.exit")
+fi
+
+# 执行实际检查
+# ... 检查逻辑 ...
+
+# 保存缓存
+echo "$result" > "$cache_file"
+echo "$exit_code" > "${cache_file}.exit"
+```
+
+---
+
+#### 问题 3：JSON 解析错误
+
+**症状：** `jq: parse error: Invalid numeric literal`
+
+**排查步骤：**
+```bash
+# 1. 检查输入 JSON 格式
+echo '{"invalid": json}' | jq . 2>&1
+
+# 2. 常见错误：
+# - 缺少引号：{key: "value"} → {"key": "value"}
+# - 缺少逗号：{"a": 1 "b": 2} → {"a": 1, "b": 2}
+# - 单引号：{'key': "value"} → {"key": "value"}
+
+# 3. 使用 jq 验证输入文件
+jq empty input.json
+
+# 4. 在脚本中添加错误处理
+input=$(cat)
+if ! echo "$input" | jq empty 2>/dev/null; then
+  echo "Error: Invalid JSON input" >&2
+  exit 1
+fi
+```
+
+---
+
+#### 问题 4：退出码含义混淆
+
+**退出码说明：**
+
+| 退出码 | 含义 | 使用场景 |
+|--------|------|---------|
+| `0` | 成功/允许 | 检查通过，允许操作执行 |
+| `1` | 一般错误 | 脚本执行出错（非阻塞） |
+| `2` | 阻塞错误 | 阻止操作执行（PreToolUse） |
+
+**正确使用示例：**
+```bash
+#!/bin/bash
+
+# 情况 1：检查通过
+if check_passes; then
+  exit 0  # 允许执行
+fi
+
+# 情况 2：发现严重问题，需要阻止
+if critical_issue_found; then
+  echo "❌ 严重安全问题！" >&2
+  exit 2  # 阻止执行
+fi
+
+# 情况 3：脚本本身出错（如缺少依赖）
+if ! command -v jq &> /dev/null; then
+  echo "Error: jq is required" >&2
+  exit 1  # 出错但不阻止（根据需求决定）
+fi
+```
+
+---
+
+#### 问题 5：环境变量未生效
+
+**症状：** `$CLAUDE_PLUGIN_ROOT` 等变量为空
+
+**排查步骤：**
+```bash
+# 1. 检查环境变量
+echo "CLAUDE_PLUGIN_ROOT=$CLAUDE_PLUGIN_ROOT"
+echo "CLAUDE_PROJECT_DIR=$CLAUDE_PROJECT_DIR"
+
+# 2. 确保在 Claude Code 环境中运行
+# 环境变量由 Claude Code 自动设置
+# 不要在外部 shell 中直接运行 Hook 脚本
+
+# 3. 测试时使用 test-hook.sh 设置环境
+./test-hook.sh my-hook.sh test-input.json
+# test-hook.sh 会自动设置这些变量
+
+# 4. 在脚本开头添加保护
+if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then
+  echo "Error: Not running in Claude Code environment" >&2
+  exit 1
+fi
+```
+
+---
+
+### 9.5 调试技巧总结
+
+**技巧 1：分步调试**
+```bash
+# 将复杂逻辑拆分为小函数，逐个测试
+check_security() { /* ... */ }
+check_quality() { /* ... */ }
+check_performance() { /* ... */ }
+
+# 单独测试每个函数
+check_security < input.json
+check_quality < input.json
+```
+
+**技巧 2：使用日志文件**
+```bash
+#!/bin/bash
+LOG_FILE="/tmp/hook-debug.log"
+
+echo "[$(date)] Starting hook..." >> "$LOG_FILE"
+echo "[$(date)] Input: $input" >> "$LOG_FILE"
+echo "[$(date)] Result: $result" >> "$LOG_FILE"
+```
+
+**技巧 3：创建测试用例集合**
+```bash
+# 创建测试目录
+mkdir -p tests/hook-tests/
+
+# 准备各种测试输入
+cat > tests/case-1-safe-delete.json << 'EOF'
+{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/test"}}
+EOF
+
+cat > tests/case-2-dangerous-delete.json << 'EOF'
+{"tool_name":"Bash","tool_input":{"command":"rm -rf /etc/nginx"}}
+EOF
+
+# 批量运行测试
+for test_file in tests/*.json; do
+  echo "Testing: $test_file"
+  ./my-hook.sh < "$test_file"
+  echo "Exit code: $?"
+  echo ""
+done
+```
+
+---
+
+## 十、最佳实践总结
 
 ### ✅ 推荐做法
 
