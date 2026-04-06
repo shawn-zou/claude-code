@@ -279,11 +279,24 @@
 **位置：** `09-Git 工作树/`
 
 **内容：**
-- Git 工作树详解（待补充）
-  - Git 工作树基础
-  - 多工作区管理
-  - 分支和工作树的配合
-  - commit-commands 插件使用
+- [Git 工作树基础详解](./09-Git 工作树/01-Git 工作树基础详解.md) ⭐⭐⭐⭐⭐ 🆕
+  - Git 工作树概念与优势
+  - git worktree 命令详解
+  - Claude Code --worktree 参数
+  - Agent isolation: worktree 配置
+- [commit-commands 插件详解](./09-Git 工作树/02-commit-commands 插件详解.md) ⭐⭐⭐⭐⭐ 🆕
+  - /commit 自动提交命令
+  - /commit-push-pr 完整工作流
+  - /clean_gone 分支清理
+- [Worktree Hook 事件详解](./09-Git 工作树/03-Worktree Hook 事件详解.md) ⭐⭐⭐⭐ 🆕
+  - WorktreeCreate Hook
+  - WorktreeRemove Hook
+  - 自定义工作树配置
+- [Git 工作流最佳实践](./09-Git 工作树/04-Git 工作流最佳实践.md) ⭐⭐⭐⭐ 🆕
+  - 功能分支工作流 + 工作树
+  - Claude Code 集成最佳实践
+  - 常见陷阱与解决方案
+  - 团队协作建议
 
 **核心命令：**
 - 🌳 git worktree add
